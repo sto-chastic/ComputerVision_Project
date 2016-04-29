@@ -12,7 +12,7 @@ from numpy import linalg as LA
 import fnmatch
 import os
 import matplotlib.pyplot as plt
-
+import scipy
 
 
 def rescale(A):
@@ -22,7 +22,7 @@ def rescale(A):
     
     old = np.zeros((1,80))
     j=0
-    while error>0.0000001:
+    while error>0.00001:
         scale = np.sqrt(np.sum(np.square(mean)))
         
         A = np.divide(A,scale)
@@ -37,9 +37,6 @@ def rescale(A):
             #plt.plot(A[i,::2],A[i,1::2])
             A[i,:] = project_tangent(A[i,:], mean); #Rotating the matrix X coordinate
             #plt.plot(A[i,::2],A[i,1::2])
-            print a
-            print T
-            print s
             plt.show()
             
         mean[:] = np.mean(A,0)#Create a new mean matrix based on the mean of the rotated and scaled shapes.
@@ -101,10 +98,9 @@ def transform(A, T):
     @param T:                            
     @return: s = scaling, alpha = angle, T = transformation matrix
     '''
-    Ax, Ay = split(A);
-    plt.plot(Ax,Ay)
-    Tx, Ty = split(T);
-    plt.plot(Tx,Ty)
+    Ax, Ay = split(A)
+    Tx, Ty = split(T)
+
     b2 = (np.dot(Ax, Ty)-np.dot(Ay, Tx))/np.power(np.dot(A, A),2)
     a2 = np.dot(T, A)/np.power(np.dot(A, A),2)
         
@@ -114,7 +110,6 @@ def transform(A, T):
     
     result = np.dot(s*T, np.vstack((Ax,Ay)));
     plt.plot(result[0,:],result[1,:])
-    plt.show()
     new_A = merge(result);
     
     return s, alpha, T, new_A
@@ -172,9 +167,10 @@ def model_learning(t_size,data):
     
     # split dataset in Target and Training set
     # Do it for all 
-    target = np.zeros(t_size, 80)
-    training = np.zeros(data-t_size, 80)
-    for i in range(data/t_size):
+    [c,r] = data.shape
+    target = np.zeros((t_size, 80))
+    training = np.zeros((c-t_size, 80))
+    for i in range(c/t_size):
         start = i*t_size
         stop =  i+t_size
         target[:,:]= data[start:stop, :]
@@ -182,9 +178,74 @@ def model_learning(t_size,data):
         model, A, error = rescale(training);
         [eigVals, eigVecs, mean] = PCA(model,0.98);
         
-        result = Matching(target,eigVals,eigVecs,mean);
+        for i in range(t_size):
+            result = Matching(target,eigVals,eigVecs,mean);
+            print result
 
     return model, error
+    
+def preproc():
+    img = cv2.imread('5DnwY.jpg', 0)
+    # Number of rows and columns
+    [cols, rows] = img.shape
+    
+    # Remove some columns from the beginning and end
+    img = img[:, 59:cols-20]
+
+    # Convert image to 0 to 1, then do log(1 + I)
+    imgLog = np.log1p(np.array(img, dtype="float") / 255)
+    
+    # Create Gaussian mask of sigma = 10
+    M = 2*rows + 1
+    N = 2*cols + 1
+    sigma = 10
+    (X,Y) = np.meshgrid(np.linspace(0,N-1,N), np.linspace(0,M-1,M))
+    centerX = np.ceil(N/2)
+    centerY = np.ceil(M/2)
+    gaussianNumerator = (X - centerX)**2 + (Y - centerY)**2
+    
+    # Low pass and high pass filters
+    Hlow = np.exp(-gaussianNumerator / (2*sigma*sigma))
+    Hhigh = 1 - Hlow
+    
+    # Move origin of filters so that it's at the top left corner to
+    # match with the input image
+    
+    HlowShift = scipy.fftpack.ifftshift(Hlow.copy())
+    HhighShift = scipy.fftpack.ifftshift(Hhigh.copy())
+    
+    # Filter the image and crop
+    If = scipy.fftpack.fft2(imgLog.copy(), (M,N))
+    Ioutlow = scipy.real(scipy.fftpack.ifft2(If.copy() * HlowShift, (M,N)))
+    Iouthigh = scipy.real(scipy.fftpack.ifft2(If.copy() * HhighShift, (M,N)))
+    
+    # Set scaling factors and add
+    gamma1 = 0.3
+    gamma2 = 1.5
+    Iout = gamma1*Ioutlow[0:rows,0:cols] + gamma2*Iouthigh[0:rows,0:cols]
+    
+    # Anti-log then rescale to [0,1]
+    Ihmf = np.expm1(Iout)
+    Ihmf = (Ihmf - np.min(Ihmf)) / (np.max(Ihmf) - np.min(Ihmf))
+    Ihmf2 = np.array(255*Ihmf, dtype="uint8")
+    
+    # Threshold the image - Anything below intensity 65 gets set to white
+    Ithresh = Ihmf2 < 65
+    Ithresh = 255*Ithresh.astype("uint8")
+    
+    # Clear off the border.  Choose a border radius of 5 pixels
+    Iclear = imclearborder(Ithresh, 5)
+    
+    # Eliminate regions that have areas below 120 pixels
+    Iopen = bwareaopen(Iclear, 120)
+    
+    # Show all images
+    cv2.imshow('Original Image', img)
+    cv2.imshow('Homomorphic Filtered Result', Ihmf2)
+    cv2.imshow('Thresholded Result', Ithresh)
+    cv2.imshow('Opened Result', Iopen)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
 
 if __name__ == '__main__':
     reader = np.zeros([112,80])
@@ -196,8 +257,8 @@ if __name__ == '__main__':
         reader[i,1::2] = reader[i,1::2]-np.mean(reader[i,1::2]);#Zero-mean of the Y axis
         i+=1;
     #print reader[::8,:]
-    shape, A,error = rescale(reader[::8,:]);
-    
+    #shape, A,error = rescale(reader[::8,:]);
+    model_learning(8,reader)
     plt.show()
     plt.plot(reader[0,::2],reader[0,1::2])
     plt.plot(shape[::2],shape[1::2])
